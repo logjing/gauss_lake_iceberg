@@ -1,0 +1,19 @@
+# Build directory
+build/
+
+# Object files
+*.o
+*.so
+*.so.*
+
+# CMake cache
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

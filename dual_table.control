@@ -1,0 +1,4 @@
+comment = 'Dual Table Architecture: ustore internal table + Iceberg foreign table auto-sync'
+default_version = '1.0'
+module_pathname = '$libdir/dual_table'
+relocatable = false
