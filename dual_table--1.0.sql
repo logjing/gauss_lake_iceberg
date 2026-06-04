@@ -373,3 +373,175 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION gaussvector.cleanup_flushed_ddl_log(int) IS 'Cleanup old flushed DDL log entries';
+
+-- ==================== Tuple-Arrow 转化测试函数 ====================
+
+-- 测试：获取 Arrow 类型映射
+CREATE OR REPLACE FUNCTION gaussvector.get_arrow_type(pg_type regtype)
+RETURNS text
+AS $$
+DECLARE
+    arrow_type text;
+BEGIN
+    -- 调用 C 函数获取 Arrow 类型名称
+    -- 目前返回基于类型 OID 的字符串映射
+    CASE pg_type::oid
+        WHEN 16 THEN arrow_type := 'bool';         -- BOOLOID
+        WHEN 21 THEN arrow_type := 'int16';        -- INT2OID
+        WHEN 23 THEN arrow_type := 'int32';        -- INT4OID
+        WHEN 20 THEN arrow_type := 'int64';        -- INT8OID
+        WHEN 700 THEN arrow_type := 'float';       -- FLOAT4OID
+        WHEN 701 THEN arrow_type := 'double';      -- FLOAT8OID
+        WHEN 1700 THEN arrow_type := 'decimal';    -- NUMERICOID
+        WHEN 25 THEN arrow_type := 'string';       -- TEXTOID
+        WHEN 1043 THEN arrow_type := 'string';     -- VARCHAROID
+        WHEN 1082 THEN arrow_type := 'date';       -- DATEOID
+        WHEN 1083 THEN arrow_type := 'time';       -- TIMEOID
+        WHEN 1184 THEN arrow_type := 'timestamp_tz'; -- TIMESTAMPTZOID
+        WHEN 1114 THEN arrow_type := 'timestamp';  -- TIMESTAMPOID
+        WHEN 2950 THEN arrow_type := 'uuid';       -- UUIDOID
+        WHEN 114 THEN arrow_type := 'json';        -- JSONOID
+        WHEN 3802 THEN arrow_type := 'json';       -- JSONBOID
+        WHEN 17 THEN arrow_type := 'binary';       -- BYTEAOID
+        ELSE arrow_type := 'string';               -- 默认映射为 string
+    END CASE;
+
+    RETURN arrow_type;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+COMMENT ON FUNCTION gaussvector.get_arrow_type(regtype) IS 'Get Arrow type name for PostgreSQL type';
+
+-- 测试：检查类型是否支持 Arrow 转化
+CREATE OR REPLACE FUNCTION gaussvector.is_arrow_supported(pg_type regtype)
+RETURNS boolean
+AS $$
+DECLARE
+    supported boolean;
+BEGIN
+    -- 检查是否在支持列表中
+    supported := pg_type::oid IN (
+        16,    -- bool
+        21,    -- int2
+        23,    -- int4
+        20,    -- int8
+        700,   -- float4
+        701,   -- float8
+        1700,  -- numeric
+        25,    -- text
+        1043,  -- varchar
+        1082,  -- date
+        1083,  -- time
+        1184,  -- timestamptz
+        1114,  -- timestamp
+        2950,  -- uuid
+        114,   -- json
+        3802,  -- jsonb
+        17     -- bytea
+    );
+
+    RETURN supported;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+COMMENT ON FUNCTION gaussvector.is_arrow_supported(regtype) IS 'Check if PostgreSQL type is supported for Arrow conversion';
+
+-- 测试：导出表结构为 Arrow Schema (JSON 格式)
+CREATE OR REPLACE FUNCTION gaussvector.table_to_arrow_schema(table_name regclass)
+RETURNS jsonb
+AS $$
+DECLARE
+    schema_json jsonb;
+BEGIN
+    -- 构建 Arrow Schema JSON
+    SELECT jsonb_agg(
+        jsonb_build_object(
+            'name', quote_ident(attname),
+            'arrow_type', gaussvector.get_arrow_type(atttypid::regtype),
+            'pg_type', format_type(atttypid, atttypmod),
+            'nullable', NOT attnotnull
+        )
+    ) INTO schema_json
+    FROM pg_attribute
+    WHERE attrelid = table_name
+    AND attnum > 0
+    AND NOT attisdropped
+    ORDER BY attnum;
+
+    RETURN schema_json;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+COMMENT ON FUNCTION gaussvector.table_to_arrow_schema(regclass) IS 'Export table structure as Arrow Schema in JSON format';
+
+-- 测试：批量导出数据到 Parquet（简化版）
+CREATE OR REPLACE FUNCTION gaussvector.export_to_parquet(
+    table_name regclass,
+    file_path text,
+    batch_size int DEFAULT 10000
+)
+RETURNS jsonb
+AS $$
+DECLARE
+    result jsonb;
+    row_count bigint;
+    schema_json jsonb;
+BEGIN
+    -- 获取表结构
+    schema_json := gaussvector.table_to_arrow_schema(table_name);
+
+    -- 获取行数
+    EXECUTE format('SELECT count(*) FROM %s', table_name::text);
+    GET DIAGNOSTICS row_count = ROW_COUNT;
+
+    -- 记录导出信息（实际 Parquet 写入需要 Arrow C++ 库）
+    result := jsonb_build_object(
+        'table', table_name::text,
+        'file_path', file_path,
+        'schema', schema_json,
+        'row_count', row_count,
+        'batch_size', batch_size,
+        'status', 'schema_ready',
+        'note', 'Full Parquet write requires Arrow C++ library'
+    );
+
+    elog(LOG, 'Arrow: Schema ready for export %s to %s', table_name::text, file_path);
+
+    RETURN result;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION gaussvector.export_to_parquet(regclass, text, int) IS 'Export table to Parquet file (schema generation only, full write requires Arrow C++)';
+
+-- 测试：导入 Parquet 数据（简化版）
+CREATE OR REPLACE FUNCTION gaussvector.import_from_parquet(
+    table_name regclass,
+    file_path text,
+    batch_size int DEFAULT 10000
+)
+RETURNS jsonb
+AS $$
+DECLARE
+    result jsonb;
+    schema_json jsonb;
+BEGIN
+    -- 获取目标表结构
+    schema_json := gaussvector.table_to_arrow_schema(table_name);
+
+    -- 记录导入信息（实际 Parquet 读取需要 Arrow C++ 库）
+    result := jsonb_build_object(
+        'table', table_name::text,
+        'file_path', file_path,
+        'expected_schema', schema_json,
+        'batch_size', batch_size,
+        'status', 'schema_ready',
+        'note', 'Full Parquet read requires Arrow C++ library'
+    );
+
+    elog(LOG, 'Arrow: Schema ready for import from %s to %s', file_path, table_name::text);
+
+    RETURN result;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION gaussvector.import_from_parquet(regclass, text, int) IS 'Import Parquet file to table (schema validation only, full read requires Arrow C++)';

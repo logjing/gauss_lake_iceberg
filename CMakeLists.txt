@@ -21,6 +21,17 @@ set(OPENGAUSS_SERVER_INCLUDE "${OPENGAUSS_INSTALL}/include/postgresql/server")
 include_directories(BEFORE ${OPENGAUSS_INCLUDE})
 include_directories(BEFORE ${OPENGAUSS_SERVER_INCLUDE})
 
+# Arrow library paths (optional - for Parquet I/O)
+if(DEFINED ARROW_HOME)
+    set(ARROW_INCLUDE "${ARROW_HOME}/include")
+    set(ARROW_LIB "${ARROW_HOME}/lib")
+    include_directories(BEFORE ${ARROW_INCLUDE})
+    link_directories(${ARROW_LIB})
+    set(ARROW_LIBS arrow parquet)
+else()
+    set(ARROW_LIBS "")
+endif()
+
 # Source files - force C++ compilation
 file(GLOB SOURCES "src/*.cpp")
 foreach(src ${SOURCES})
@@ -63,6 +74,11 @@ target_compile_options(dual_table PRIVATE
     -Wno-unused-but-set-variable
     -Wno-sign-compare
 )
+
+# Link Arrow libraries if available
+if(DEFINED ARROW_HOME)
+    target_link_libraries(dual_table ${ARROW_LIBS})
+endif()
 
 # Set RPATH to use system libstdc++
 set_target_properties(dual_table PROPERTIES
