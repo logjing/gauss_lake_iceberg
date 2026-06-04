@@ -54,6 +54,38 @@ delta_table_process_utility_hook(
     Node *parse_tree = cxt->parse_tree;
     NodeTag node_tag = nodeTag(parse_tree);
 
+    /* ========== COPY FROM ========== */
+    if (node_tag == T_CopyStmt)
+    {
+        CopyStmt *stmt = (CopyStmt *) parse_tree;
+
+        if (stmt->is_from && stmt->relation)
+        {
+            /* 打开目标表检查是否是 Delta 表 */
+            LOCKMODE lockmode = RowExclusiveLock;
+            Relation rel = table_openrv(stmt->relation, lockmode);
+            Oid relid = RelationGetRelid(rel);
+
+            const char *location = get_iceberg_location(relid);
+
+            if (location != NULL)
+            {
+                /* 是 Delta 表，执行批量 COPY FROM */
+                ParseState *pstate = make_parsestate(NULL);
+                pstate->p_sourcetext = cxt->query_string;
+
+                ProcessDeltaTableCopyFrom(stmt, rel, pstate, completionTag);
+
+                pfree(pstate);
+                table_close(rel, NoLock);
+                return;  /* 拦截完成，不调用标准流程 */
+            }
+
+            /* 非 Delta 表，继续标准流程 */
+            table_close(rel, lockmode);
+        }
+    }
+
     /* ========== CREATE TABLE ========== */
     if (node_tag == T_CreateStmt)
     {

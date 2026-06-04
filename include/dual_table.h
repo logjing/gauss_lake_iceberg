@@ -159,6 +159,18 @@ extern char *build_create_foreign_table_sql(
     const char *iceberg_name,
     const char *location);
 
+/* ==================== COPY FROM 批量导入函数 ==================== */
+
+/* 处理 COPY FROM 到 Delta 表 */
+extern void ProcessDeltaTableCopyFrom(
+    CopyStmt *stmt,
+    Relation rel,
+    ParseState *pstate,
+    char *completionTag);
+
+/* 标记 Delta 表有待刷新数据 */
+extern void MarkDeltaTablePendingChanges(Oid delta_relid);
+
 /* ==================== 初始化函数 ==================== */
 
 extern void InitializeDeltaTablePlugin(void);
