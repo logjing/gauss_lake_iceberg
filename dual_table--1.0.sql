@@ -82,6 +82,10 @@ DECLARE
     col_sql text;
     col_names text[];
     ddl_record record;
+    -- 分批同步相关变量
+    total_rows bigint;
+    current_batch int;
+    batch_num int;
 BEGIN
     -- 获取 Delta 表信息
     delta_schema := split_part(delta_table::text, '.', 1);
@@ -185,24 +189,53 @@ BEGIN
         elog(LOG, 'FLUSH: Synced %d DDL changes to Iceberg', ddl_count);
     END IF;
 
-    -- ========== 第三步：同步数据（INSERT ... SELECT）==========
+    -- ========== 第三步：分批同步数据到 Iceberg ==========
     -- 获取列名列表
     SELECT array_agg(quote_ident(attname) ORDER BY attnum) INTO col_names
     FROM pg_attribute
     WHERE attrelid = delta_table
     AND attnum > 0 AND NOT attisdropped;
 
-    -- 执行批量数据同步
-    sync_sql := format(
-        'INSERT INTO %s (%s) SELECT %s FROM %s',
-        iceberg_oid::text,
-        array_to_string(col_names, ', '),
-        array_to_string(col_names, ', '),
-        delta_table::text
-    );
+    -- 获取 Delta 表总行数
+    EXECUTE format('SELECT count(*) FROM %s', delta_table::text);
+    GET DIAGNOSTICS total_rows = ROW_COUNT;
 
-    EXECUTE sync_sql;
-    GET DIAGNOSTICS row_count = ROW_COUNT;
+    row_count := 0;
+    batch_num := 0;
+
+    -- 分批写入 Iceberg
+    WHILE total_rows > 0 LOOP
+        -- 计算当前批次行数
+        current_batch := LEAST(batch_size, total_rows);
+
+        -- 分批插入到 Iceberg
+        sync_sql := format(
+            'INSERT INTO %s (%s) SELECT %s FROM %s ORDER BY ctid LIMIT %s',
+            iceberg_oid::text,
+            array_to_string(col_names, ', '),
+            array_to_string(col_names, ', '),
+            delta_table::text,
+            current_batch
+        );
+
+        EXECUTE sync_sql;
+
+        -- 删除已同步的 Delta 数据（避免重复同步）
+        EXECUTE format(
+            'DELETE FROM %s WHERE ctid IN (
+                SELECT ctid FROM %s ORDER BY ctid LIMIT %s
+            )',
+            delta_table::text,
+            delta_table::text,
+            current_batch
+        );
+
+        row_count := row_count + current_batch;
+        total_rows := total_rows - current_batch;
+        batch_num := batch_num + 1;
+
+        elog(LOG, 'FLUSH: Batch %d - %d rows synced to Iceberg', batch_num, current_batch);
+    END LOOP;
 
     -- ========== 第四步：更新状态 ==========
     UPDATE gaussvector.delta_tables
