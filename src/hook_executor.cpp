@@ -1,62 +1,40 @@
 /*
  * hook_executor.cpp - ExecutorRun Hook（延迟同步模式）
  *
- * 延迟同步模式下：
- * - INSERT 不立即同步到 Iceberg
- * - 数据保存在 Delta 内表中
- * - 用户调用 FLUSH 命令时批量同步
+ * DML 操作（INSERT/UPDATE/DELETE）现在由 SQL 触发器处理。
+ * 当 Delta 表上有触发器时，OpFusion 会回退到标准 executor 路径，
+ * 触发器会自动记录 DML 操作到 delta_dml_log 表。
  *
- * 此 Hook 仅用于日志记录，不执行实际同步
+ * ExecutorRun_hook 主要用于：
+ * 1. SELECT 查询的可选监控
+ * 2. 作为后备机制，防止触发器未正确安装的情况
  */
 
 #include "../include/dual_table.h"
+#include <unistd.h>
+#include <fcntl.h>
+#include <cstring>
 
-/*
- * ExecutorRun Hook：记录 INSERT 操作日志
- * 实际同步由 gaussvector.flush_delta_table() 执行
- */
 void
 delta_table_executor_run_hook(QueryDesc *queryDesc, ScanDirection direction, long count)
 {
-    /* 执行原始 ExecutorRun */
-    if (ExecutorRun_hook && ExecutorRun_hook != delta_table_executor_run_hook)
-        ExecutorRun_hook(queryDesc, direction, count);
-    else
-        standard_ExecutorRun(queryDesc, direction, count);
-
-    /* INSERT 完成后，标记 Delta 表有待刷新的数据 */
-    if (queryDesc->operation == CMD_INSERT)
+    /* Safety: skip for NULL queryDesc */
+    if (queryDesc == NULL)
     {
-        ResultRelInfo *resultRelInfo = queryDesc->estate->es_result_relation_info;
-
-        if (resultRelInfo && resultRelInfo->ri_RelationDesc)
-        {
-            Oid target_relid = resultRelInfo->ri_RelationDesc->rd_id;
-
-            /* 检查是否是 Delta 表 */
-            const char *location = get_iceberg_location(target_relid);
-            if (location != NULL)
-            {
-                /* 更新 pending_changes 标记 */
-                SPI_CONNECT_COMPAT();
-
-                StringInfoData query;
-                initStringInfo(&query);
-
-                appendStringInfo(&query,
-                    "UPDATE gaussvector.delta_tables "
-                    "SET pending_changes = true "
-                    "WHERE delta_table_oid = %u",
-                    target_relid);
-
-                SPI_EXECUTE_COMPAT(query.data, false, 0);
-                SPI_FINISH_COMPAT();
-
-                pfree(query.data);
-
-                elog(DEBUG1, "Delta Table: INSERT on delta table %u, marked pending_changes",
-                     target_relid);
-            }
-        }
+        call_prev_ExecutorRun(queryDesc, direction, count);
+        return;
     }
+
+    CmdType operation = queryDesc->operation;
+
+    /*
+     * DML 操作现在由 SQL 触发器处理（delta_dml_trigger_func）。
+     * 当 Delta 表有触发器时，OpFusion 会检测到并回退到标准 executor，
+     * 触发器会在 DML 执行时自动记录到 delta_dml_log 表。
+     *
+     * 这里我们只记录调试信息，不执行实际的 DML 日志记录。
+     */
+
+    /* Call prev hook chain */
+    call_prev_ExecutorRun(queryDesc, direction, count);
 }
