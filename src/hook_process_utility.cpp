@@ -63,26 +63,26 @@ delta_table_process_utility_hook(
         {
             /* 打开目标表检查是否是 Delta 表 */
             LOCKMODE lockmode = RowExclusiveLock;
-            Relation rel = table_openrv(stmt->relation, lockmode);
-            Oid relid = RelationGetRelid(rel);
+            Oid relid = RangeVarGetRelid(stmt->relation, lockmode, true);
 
-            const char *location = get_iceberg_location(relid);
-
-            if (location != NULL)
+            if (relid != InvalidOid)
             {
-                /* 是 Delta 表，执行批量 COPY FROM */
-                ParseState *pstate = make_parsestate(NULL);
-                pstate->p_sourcetext = cxt->query_string;
+                const char *location = get_iceberg_location(relid);
 
-                ProcessDeltaTableCopyFrom(stmt, rel, pstate, completionTag);
+                if (location != NULL)
+                {
+                    /* 是 Delta 表，执行批量 COPY FROM */
+                    Relation rel = TABLE_OPEN_COMPAT(relid, lockmode);
+                    ParseState *pstate = make_parsestate(NULL);
+                    pstate->p_sourcetext = cxt->query_string;
 
-                pfree(pstate);
-                table_close(rel, NoLock);
-                return;  /* 拦截完成，不调用标准流程 */
+                    ProcessDeltaTableCopyFrom(stmt, rel, pstate, completionTag);
+
+                    pfree(pstate);
+                    TABLE_CLOSE_COMPAT(rel, NoLock);
+                    return;  /* 拦截完成，不调用标准流程 */
+                }
             }
-
-            /* 非 Delta 表，继续标准流程 */
-            table_close(rel, lockmode);
         }
     }
 
@@ -109,7 +109,7 @@ delta_table_process_utility_hook(
                 char *location = generate_iceberg_location(namespace_name, stmt->relation->relname);
 
                 /* 注册映射（iceberg_table_oid 为 NULL） */
-                register_delta_table_mapping(delta_relid, location);
+                register_delta_table_mapping_internal(delta_relid, location);
 
                 elog(LOG, "Delta Table: Registered delta table %s.%s, Iceberg table will be created on FLUSH",
                      namespace_name, stmt->relation->relname);
@@ -126,6 +126,8 @@ delta_table_process_utility_hook(
     {
         AlterTableStmt *stmt = (AlterTableStmt *) parse_tree;
 
+        elog(LOG, "Delta Table: ALTER TABLE detected, relkind=%d", stmt->relkind);
+
         /* 先执行内表 ALTER */
         if (ProcessUtility_hook && ProcessUtility_hook != delta_table_process_utility_hook)
             ProcessUtility_hook(cxt, dest, sentToRemote, completionTag, context, isCTAS);
@@ -136,10 +138,14 @@ delta_table_process_utility_hook(
         if (stmt->relkind == OBJECT_TABLE)
         {
             Oid relid = RangeVarGetRelid(stmt->relation, AccessShareLock, true);
+            elog(LOG, "Delta Table: ALTER TABLE relid=%u", relid);
+
             if (relid != InvalidOid)
             {
                 /* 检查是否是 Delta 表 */
                 const char *location = get_iceberg_location(relid);
+                elog(LOG, "Delta Table: ALTER TABLE location=%s", location ? location : "NULL");
+
                 if (location != NULL)
                 {
                     /* 遍历 ALTER 子命令，记录到日志 */
