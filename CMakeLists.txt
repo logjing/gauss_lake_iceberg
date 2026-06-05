@@ -32,8 +32,10 @@ else()
     set(ARROW_LIBS "")
 endif()
 
-# Source files - force C++ compilation
-file(GLOB SOURCES "src/*.cpp")
+# Source files - include both .cpp and .c, force C++ compilation
+file(GLOB CPP_SOURCES "src/*.cpp")
+file(GLOB C_SOURCES "src/*.c")
+set(SOURCES ${CPP_SOURCES} ${C_SOURCES})
 foreach(src ${SOURCES})
     set_source_files_properties(${src} PROPERTIES LANGUAGE CXX)
 endforeach()
@@ -49,8 +51,9 @@ set_target_properties(dual_table PROPERTIES
 
 # openGauss MACRO_OPTIONS - required for correct struct layouts and ABI compatibility
 # IMPORTANT: Override PG_VERSION_NUM to match runtime server (9.2.x) not header (13.0)
+# Must use compile_options to ensure -U comes before -D on command line
 target_compile_options(dual_table PRIVATE
-    -UPG_VERSION_NUM
+    -UPG_VERSION_NUM -DPG_VERSION_NUM=90204
 )
 target_compile_definitions(dual_table PRIVATE
     PGXC
@@ -61,7 +64,6 @@ target_compile_definitions(dual_table PRIVATE
     _REENTRANT
     _POSIX_PTHREAD_SEMANTICS
     USE_SPQ
-    PG_VERSION_NUM=90204
 )
 
 target_compile_options(dual_table PRIVATE

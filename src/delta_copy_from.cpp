@@ -20,9 +20,6 @@
 #include "utils/acl.h"
 #include "catalog/pg_class.h"
 
-/* RLS related */
-#include "utils/rls.h"
-
 /* ==================== COPY FROM Batch Import Handler ==================== */
 
 /*
@@ -48,41 +45,17 @@ ProcessDeltaTableCopyFrom(CopyStmt *stmt, Relation rel,
     /* 1. Permission check */
     AclResult aclresult = pg_class_aclcheck(relid, GetUserId(), ACL_INSERT);
     if (aclresult != ACLCHECK_OK)
-        aclcheck_error(aclresult, ACL_INSERT, RelationGetRelationName(rel));
-
-    /* 2. Check read-only transaction */
-    if (XactReadOnly)
-        PreventCommandIfReadOnly("COPY FROM");
-
-    /* 3. RLS check - Delta table does not support COPY FROM with RLS enabled */
-    if (check_enable_rls(relid, InvalidOid, false) == RLS_ENABLED)
-        ereport(ERROR,
-                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-                 errmsg("COPY FROM not supported with row-level security"),
-                 errhint("Use INSERT statements instead.")));
+        aclcheck_error(aclresult, ACL_KIND_CLASS, RelationGetRelationName(rel));
 
     PG_TRY();
     {
         /*
          * BeginCopyFrom initializes COPY state (openGauss API)
-         * Parameters:
-         * - rel: target table
-         * - filename: data file path
-         * - attnamelist: column name list (internally converted to numbers)
-         * - options: COPY options
-         * - mem_info: memory usage info (NULL means not tracking)
-         * - queryString: query string
-         * - func: data source callback (NULL means use default file/stdin)
-         *
          * Note: CopyFrom internally determines whether to enable batch insert (useHeapMultiInsert)
          * Delta internal table satisfies batch insert conditions:
          * - No BEFORE/INSTEAD OF INSERT triggers
          * - Default value expressions are non-volatile
          * - Not a foreign table
-         *
-         * Batch thresholds:
-         * - MAX_BUFFERED_TUPLES = 20000
-         * - MAX_TUPLES_SIZE = 1MB
          */
         cstate = BeginCopyFrom(
             rel,

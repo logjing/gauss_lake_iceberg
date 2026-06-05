@@ -15,6 +15,14 @@
 #include "postgres.h"
 #include "knl/knl_variable.h"
 
+/* CRITICAL: Override PG_VERSION_NUM after postgres.h is included.
+ * openGauss headers define PG_VERSION_NUM=130000 (PostgreSQL 13.0),
+ * but the runtime server is version 9.2.x. Pg_magic_func uses
+ * PG_VERSION_NUM/100 for version checking, causing "version mismatch"
+ * PANIC on startup. We must undef and redefine AFTER the include. */
+#undef PG_VERSION_NUM
+#define PG_VERSION_NUM 90204
+
 /* 安全函数 */
 #include "securec.h"
 #include "securec_check.h"
@@ -63,6 +71,9 @@
 
 /* Misc */
 #include "miscadmin.h"
+
+/* Array */
+#include "utils/array.h"
 
 /* Foreign */
 #include "foreign/fdwapi.h"
@@ -114,8 +125,11 @@ extern void delta_table_executor_run_hook(
 
 /* ==================== Catalog 操作函数 ==================== */
 
-/* 注册 Delta 表映射 */
-extern void register_delta_table_mapping(
+/* 注册 Delta 表映射（PG 包装函数） */
+extern "C" Datum register_delta_table_mapping(PG_FUNCTION_ARGS);
+
+/* 注册 Delta 表映射（内部实现） */
+extern void register_delta_table_mapping_internal(
     Oid delta_relid,
     const char *location);
 
@@ -171,8 +185,36 @@ extern void ProcessDeltaTableCopyFrom(
 /* 标记 Delta 表有待刷新数据 */
 extern void MarkDeltaTablePendingChanges(Oid delta_relid);
 
+/* ==================== DML 日志记录函数 ==================== */
+
+/* 记录 UPDATE/DELETE 操作到 delta_dml_log */
+extern void log_dml_operation(
+    Oid delta_relid,
+    const char *operation_type,
+    const char *source_sql);
+
+/* 获取表主键列名列表 */
+extern char **get_table_primary_keys(Oid delta_relid, int *pk_count);
+
 /* ==================== 初始化函数 ==================== */
 
 extern void InitializeDeltaTablePlugin(void);
+
+/* ==================== Hook Chain Helpers ==================== */
+
+/* Call previous ProcessUtility hook (preserves hook chain like security_plugin) */
+extern void call_prev_ProcessUtility(
+    processutility_context *cxt,
+    DestReceiver *dest,
+    bool sentToRemote,
+    char *completionTag,
+    ProcessUtilityContext context,
+    bool isCTAS);
+
+/* Call previous ExecutorRun hook */
+extern void call_prev_ExecutorRun(
+    QueryDesc *queryDesc,
+    ScanDirection direction,
+    long count);
 
 #endif /* DUAL_TABLE_H */
